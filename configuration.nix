@@ -1,0 +1,193 @@
+{ config, pkgs, lib, ... }:
+
+{
+	imports = [
+		./hardware-configuration.nix
+		./disko.nix
+	];
+
+	# Bootloader
+	boot.loader.systemd-boot.enable = true;
+	boot.loader.efi.canTouchEfiVariables = true;
+
+	networking.hostName = "nixos-server";
+
+	# Networking
+	networking.networkmanager.enable = true;
+
+	networking.firewall = {
+		enable = true;
+		allowedTCPPorts = [ 22 ];
+		interfaces.tailscale0.allowedTCPPorts = [ 8096 2283 8080 ];
+	};
+
+	# Time & locale
+	time.timeZone = "Asia/Calcutta";
+	i18n.defaultLocale = "en_US.UTF-8";
+	console.keyMap = "us";
+
+	# No GUI
+	services.xserver.enable = false;
+
+	# SSH
+	services.openssh = {
+		enable = true;
+		settings = {
+			PasswordAuthentication = true;
+			PermitRootLogin = "no";
+		};
+	};
+
+	# Users
+	users.groups.services = {};
+	users.groups.filebrowser = {};
+
+	users.users.jellyfin = {
+		extraGroups = ["services"];
+	};
+
+	users.users.immich = {
+		extraGroups = [ "services" ];
+	};
+
+	users.users.filebrowser = {
+		isSystemUser = true;
+		group = "filebrowser";
+		extraGroups = [ "services" ];
+		home = "/services/Filebrowser";
+		createHome = true;
+	};
+
+	users.users.vizkid = {
+		isNormalUser = true;
+		description = "vizkid";
+		home = "/home/vizkid";
+		shell = pkgs.bash;
+		extraGroups = [ "wheel" "networkmanager" ];
+	};
+
+	users.users.vishnu = {
+		isNormalUser = true;
+		description = "vishnu";
+		home = "/home/vishnu";
+		shell = pkgs.bash;
+		extraGroups = [ "wheel" "networkmanager" ];
+	};
+
+	security.sudo = {
+		enable = true;
+		wheelNeedsPassword = true;
+	};
+	
+	# Permissions
+	system.activationScripts.permissions = {
+		text = ''
+			mkdir -p /services
+			chown root:services /services
+			chmod 0710 /services
+
+			mkdir -p /services/Filebrowser
+			chown filebrowser:filebrowser /services/Filebrowser
+			chmod 0700 /services/Filebrowser
+
+			mkdir -p /services/Jellyfin
+			chown jellyfin:jellyfin /services/Jellyfin
+			chmod 0700 /services/Jellyfin
+
+			mkdir -p /services/Immich
+			chown immich:immich /services/Immich
+			chmod 0700 /services/Immich
+
+			${pkgs.acl}/bin/setfacl -m u:jellyfin:x /home/vizkid
+			${pkgs.acl}/bin/setfacl -m u:jellyfin:rx /home/vizkid/Jellyfin
+			find /home/vizkid/Jellyfin -type d -exec ${pkgs.acl}/bin/setfacl -m u:jellyfin:rx {} +
+			find /home/vizkid/Jellyfin -type f -exec ${pkgs.acl}/bin/setfacl -m u:jellyfin:r {} +
+			find /home/vizkid/Jellyfin -type d -exec ${pkgs.acl}/bin/setfacl -d -m u:jellyfin:rx {} +	
+			${pkgs.acl}/bin/setfacl -m u:jellyfin:x /home/vishnu
+			${pkgs.acl}/bin/setfacl -m u:jellyfin:rx /home/vishnu/Jellyfin
+			find /home/vishnu/Jellyfin -type d -exec ${pkgs.acl}/bin/setfacl -m u:jellyfin:rx {} +
+			find /home/vishnu/Jellyfin -type f -exec ${pkgs.acl}/bin/setfacl -m u:jellyfin:r {} +
+			find /home/vishnu/Jellyfin -type d -exec ${pkgs.acl}/bin/setfacl -d -m u:jellyfin:rx {} +
+			${pkgs.acl}/bin/setfacl -R -m g:filebrowser:rwx /home
+			${pkgs.acl}/bin/setfacl -R -d -m g:filebrowser:rwx /home
+		'';
+	};
+
+	# Swap file
+	swapDevices = [
+		{
+			device = "/swapfile";
+			size = 4096;
+		}
+	];
+
+	# Jellyfin
+	services.jellyfin = {
+		enable = true;
+		openFirewall = false;
+		dataDir = "/services/Jellyfin";
+		cacheDir = "/services/Jellyfin/cache";
+	};
+
+	# Tailscale
+	services.tailscale = {
+		enable = true;
+	};
+
+	# Immich
+	services.immich = {
+		enable = true;
+		host = "0.0.0.0";
+		port = 2283;
+		mediaLocation = "/services/Immich";
+		openFirewall = false;
+	};
+
+	systemd.services.immich-server.serviceConfig = {
+		ProtectHome   = lib.mkForce false;
+		ReadWritePaths = [
+			"/services/Immich"
+		];
+	};
+	
+	# Filebrowser
+	systemd.services.filebrowser = {
+		description = "File Browser Service";
+		after = [ "network.target" ];
+		wantedBy = [ "multi-user.target" ];
+		serviceConfig = {
+			ExecStart = "${pkgs.filebrowser}/bin/filebrowser -a 0.0.0.0 -p 8080 -r /home -d /services/Filebrowser/filebrowser.db -c /services/Filebrowser/config.yaml";
+			WorkingDirectory = "/services/Filebrowser";
+			StateDirectory = "filebrowser";
+			Restart = "always";
+			User = "filebrowser";
+			Group = "filebrowser";
+			ProtectHome = lib.mkForce false;
+			ProtectSystem = "strict";
+			ReadWritePaths = [
+				"/services/Filebrowser"
+				"/home"
+			];
+		};
+	};
+
+	environment.etc."filebrowser.yaml".text = ''
+		address: 0.0.0.0
+		port: 8080
+		root: /srv/filebrowser
+		database: /services/Filebrowser/filebrowser.db
+		disableExec: true
+	'';
+
+	environment.systemPackages = with pkgs; [
+		vim
+		wget
+		git
+		curl
+		acl
+	];
+
+	nix.settings.experimental-features = [ "nix-command" "flakes" ];
+
+	system.stateVersion = "25.11";
+}
