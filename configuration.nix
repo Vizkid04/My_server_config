@@ -18,7 +18,7 @@
 	networking.firewall = {
 		enable = true;
 		allowedTCPPorts = [ 22 ];
-		interfaces.tailscale0.allowedTCPPorts = [ 8096 2283 8080 ];
+		interfaces.tailscale0.allowedTCPPorts = [ 8096 2283 8080 8081 ];
 	};
 
 	# Time & locale
@@ -110,6 +110,12 @@
 			find /home/vishnu/Jellyfin -type d -exec ${pkgs.acl}/bin/setfacl -d -m u:jellyfin:rx {} +
 			${pkgs.acl}/bin/setfacl -R -m g:filebrowser:rwx /home
 			${pkgs.acl}/bin/setfacl -R -d -m g:filebrowser:rwx /home
+			mkdir -p /services/Filebrowser/db
+			mkdir -p /services/Filebrowser/cache
+			chown -R filebrowser:filebrowser /services/Filebrowser
+			find /services/Filebrowser -type d -exec chmod 2770 {} +
+			find /services/Filebrowser -type f -exec chmod 0660 {} +
+			${pkgs.acl}/bin/setfacl -R -d -m g:filebrowser:rwx /services/Filebrowser
 		'';
 	};
 
@@ -149,36 +155,61 @@
 			"/services/Immich"
 		];
 	};
-	
-	# Filebrowser
-	systemd.services.filebrowser = {
-		description = "File Browser Service";
+
+	virtualisation.podman = {
+			enable = true;
+			dockerCompat = true;
+		};
+
+
+	systemd.services.onlyoffice = {
+		description = "OnlyOffice Document Server";
 		after = [ "network.target" ];
 		wantedBy = [ "multi-user.target" ];
 		serviceConfig = {
-			ExecStart = "${pkgs.filebrowser}/bin/filebrowser -a 0.0.0.0 -p 8080 -r /home -d /services/Filebrowser/filebrowser.db -c /services/Filebrowser/config.yaml";
-			WorkingDirectory = "/services/Filebrowser";
-			StateDirectory = "filebrowser";
-			Restart = "always";
-			User = "filebrowser";
-			Group = "filebrowser";
-			ProtectHome = lib.mkForce false;
-			ProtectSystem = "strict";
-			ReadWritePaths = [
-				"/services/Filebrowser"
-				"/home"
-			];
+			ExecStart = ''
+				${pkgs.podman}/bin/podman run --rm \
+				--name onlyoffice \
+				--network office-net \
+				--user 0:0 \
+				-p 8081:80 \
+				-e JWT_ENABLED=true \
+				-e JWT_SECRET="bruh123" \
+				-e ALLOW_PRIVATE_IP_ADDRESS=true \
+				-e JWT_HEADER="Authorization" \
+				-v /services/onlyoffice/data:/var/www/onlyoffice/Data \
+				onlyoffice/documentserver:latest
+	    		'';
+		Restart = "always";
+		RestartSec = 20;
+		TimeoutStartSec = 600;
 		};
 	};
 
-	environment.etc."filebrowser.yaml".text = ''
-		address: 0.0.0.0
-		port: 8080
-		root: /srv/filebrowser
-		database: /services/Filebrowser/filebrowser.db
-		disableExec: true
-	'';
-
+	systemd.services.filebrowser-quantum = {
+		description = "FileBrowser Quantum Service";
+		after = [ "network.target" ];
+		wantedBy = [ "multi-user.target" ];
+		serviceConfig = {
+			ExecStart = ''
+				${pkgs.podman}/bin/podman run \
+				--replace \
+				--name filebrowser-quantum \
+				--network office-net \
+				--user 0:0 \
+				-p 8080:80 \
+				-v /home:/srv \
+				-v /services/Filebrowser/db:/db \
+				-v /services/Filebrowser/database:/database:Z \
+				-v /services/Filebrowser/cache:/cache:Z \
+				-e FILEBROWSER_CONFIG=/db/config.yaml \
+				gtstef/filebrowser:beta
+	    		'';
+		Restart = "always";
+		RestartSec = 5;
+		};
+	};
+	
 	environment.systemPackages = with pkgs; [
 		vim
 		wget
