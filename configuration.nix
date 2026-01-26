@@ -17,8 +17,8 @@
 
 	networking.firewall = {
 		enable = true;
-		allowedTCPPorts = [ 22 ];
-		interfaces.tailscale0.allowedTCPPorts = [ 8096 2283 8080 8081 ];
+		allowedTCPPorts = [ 22 80 443 ];
+		interfaces.tailscale0.allowedTCPPorts = [ 8096 2283 8080 8081 8222 ];
 	};
 
 	# Time & locale
@@ -116,6 +116,14 @@
 			find /services/Filebrowser -type d -exec chmod 2770 {} +
 			find /services/Filebrowser -type f -exec chmod 0660 {} +
 			${pkgs.acl}/bin/setfacl -R -d -m g:filebrowser:rwx /services/Filebrowser
+			mkdir -p /var/lib/tailscale/certs
+			chmod o+x /var/lib/tailscale
+			chown nginx:nginx /var/lib/tailscale/certs
+			chmod 750 /var/lib/tailscale/certs
+			if [ -f /var/lib/tailscale/certs/nixos-server.tail2d9243.ts.net.crt ]; then
+				chown nginx:nginx /var/lib/tailscale/certs/nixos-server.tail2d9243.ts.net.*
+				chmod 640 /var/lib/tailscale/certs/nixos-server.tail2d9243.ts.net.*
+			fi
 		'';
 	};
 
@@ -161,7 +169,7 @@
 			dockerCompat = true;
 		};
 
-
+	# Onlyoffice
 	systemd.services.onlyoffice = {
 		description = "OnlyOffice Document Server";
 		after = [ "network.target" ];
@@ -186,6 +194,7 @@
 		};
 	};
 
+	# Filebrowser Quantum
 	systemd.services.filebrowser-quantum = {
 		description = "FileBrowser Quantum Service";
 		after = [ "network.target" ];
@@ -208,6 +217,53 @@
 		Restart = "always";
 		RestartSec = 5;
 		};
+	};
+
+	# Vaultwarden
+	services.vaultwarden = {
+		enable = true;
+		config = {
+			ROCKET_ADDRESS = "127.0.0.1";
+			ROCKET_PORT = 8222;
+			DOMAIN = "https://nixos-server.tail2d9243.ts.net";
+			SIGNUPS_ALLOWED = false;
+			INVITATIONS_ALLOWED = false;
+		};
+	};
+	
+	# Nginx for Vaultwarden
+	services.tailscale.permitCertUid = "nginx";	
+	services.nginx = {
+		enable = true;
+		recommendedProxySettings = true;
+		recommendedTlsSettings = true;
+		virtualHosts."nixos-server.tail2d9243.ts.net" = {
+			addSSL = true;
+			sslCertificate = "/var/lib/tailscale/certs/nixos-server.tail2d9243.ts.net.crt";
+			sslCertificateKey = "/var/lib/tailscale/certs/nixos-server.tail2d9243.ts.net.key";
+			locations."/" = {
+				proxyPass = "http://127.0.0.1:8222";
+				proxyWebsockets = true;
+			};
+		};
+		serviceConfig = {
+			ProtectHome = "read-only";
+			ReadOnlyPaths = [ "/var/lib/tailscale/certs" ];
+		};
+	};
+	
+	# Https certificate renewal
+	systemd.services.tailscale-cert-renewal = {
+		description = "Renew Tailscale certificates for Nginx";
+		after = [ "network-online.target" "tailscaled.service" ];
+		wantedBy = [ "multi-user.target" ];
+		serviceConfig = {
+			Type = "oneshot";
+			ExecStart = "${pkgs.tailscale}/bin/tailscale cert --cert-file /var/lib/tailscale/certs/nixos-server.tail2d9243.ts.net.crt --key-file /var/lib/tailscale/certs/nixos-server.tail2d9243.ts.net.key nixos-server.tail2d9243.ts.net";
+			ExecPost = "${pkgs.systemd}/bin/systemctl reload nginx";
+			User = "root"; 
+		};
+		startAt = "weekly";
 	};
 	
 	environment.systemPackages = with pkgs; [
